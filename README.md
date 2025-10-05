@@ -1,9 +1,9 @@
 # AWS 8-Week Roadmap – Final Project
 
-This repository documents my journey through an **8-week AWS Cloud Engineering Roadmap** and my final **Cloud Notes App infrastructure project**.  
-It includes Infrastructure-as-Code (CloudFormation templates), test evidence (screenshots), and supporting documentation.
+This repository documents my journey through an **8-week AWS Cloud Engineering Roadmap** and my final **Cloud Notes App infrastructure project**. It includes Infrastructure-as-Code (CloudFormation templates), test evidence (screenshots), and supporting documentation.
 
 The final deployment demonstrates a modular AWS architecture with a **VPC, Bastion Host, Application Load Balancer (ALB), Auto Scaling Group (ASG), RDS MySQL Database, and CloudWatch Monitoring**.  
+
 All resources were deployed and verified through CloudFormation using best practices for subnet isolation and least-privilege access.
 
 ---
