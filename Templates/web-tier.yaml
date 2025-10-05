@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Week 8 Day 2 - Web tier with ALB + Auto Scaling Group (fixed PHP + UserData)"
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair for SSH
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro]
+    Description: EC2 instance type
+
+  LatestAmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+
+  DBEndpoint:
+    Type: String
+    Description: RDS endpoint (e.g. from Week 8 Day 3 Outputs)
+
+  DBUsername:
+    Type: String
+    Default: admin
+    Description: DB master username (must match RDS)
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: DB master password (must match RDS)
+
+Resources:
+  # --- Launch Template ---
+  WebLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        ImageId: !Ref LatestAmiId
+        SecurityGroupIds:
+          - !ImportValue NotesApp-WebSG
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+
+            # Update & install packages
+            dnf -y update
+            dnf -y install httpd php php-mysqlnd mariadb105 php-cli php-common php-pdo php-gd php-xml
+
+            # Enable services
+            systemctl enable httpd
+            systemctl restart httpd
+            systemctl enable php-fpm || true
+            systemctl restart php-fpm || true
+
+            # --- PHP test page ---
+            cat > /var/www/html/info.php <<'EOF'
+            <?php phpinfo(); ?>
+            EOF
+
+            # --- Main app ---
+            cat > /var/www/html/index.php <<'EOF'
+            <?php
+            error_reporting(E_ALL);
+            ini_set('display_errors', 1);
+
+            $host = "${DBEndpoint}";
+            $user = "${DBUsername}";
+            $pass = "${DBPassword}";
+            $db   = "notesapp";
+
+            $conn = new mysqli($host, $user, $pass, $db);
+            if ($conn->connect_error) {
+                die("DB Connection failed: " . $conn->connect_error);
+            }
+
+            // Create table if not exists
+            $conn->query("CREATE TABLE IF NOT EXISTS notes (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              content TEXT NOT NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )");
+
+            // Handle form submit
+            if ($_SERVER["REQUEST_METHOD"] === "POST" && !empty($_POST['note'])) {
+                $note = $conn->real_escape_string($_POST['note']);
+                $conn->query("INSERT INTO notes (content) VALUES ('$note')");
+                header("Location: index.php"); // prevent resubmission
+                exit();
+            }
+
+            // Fetch notes
+            $result = $conn->query("SELECT * FROM notes ORDER BY created_at DESC");
+            ?>
+            <html>
+            <head><title>Cloud Notes App</title></head>
+            <body>
+              <h1>Cloud Notes App</h1>
+              <form method="POST" action="index.php">
+                <textarea name="note" rows="3" cols="40" placeholder="Write a note..."></textarea><br>
+                <button type="submit">Add Note</button>
+              </form>
+              <h2>All Notes</h2>
+              <ul>
+                <?php while ($row = $result->fetch_assoc()): ?>
+                  <li><strong><?= $row['created_at'] ?></strong>: <?= htmlspecialchars($row['content']) ?></li>
+                <?php endwhile; ?>
+              </ul>
+            </body>
+            </html>
+            EOF
+
+  # --- Application Load Balancer ---
+  WebALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: notesapp-alb
+      Scheme: internet-facing
+      Subnets:
+        - !ImportValue NotesApp-PublicA
+        - !ImportValue NotesApp-PublicB
+      SecurityGroups:
+        - !ImportValue NotesApp-WebSG
+
+  WebTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: notesapp-tg
+      VpcId: !ImportValue NotesApp-VPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckPath: /info.php
+      Matcher:
+        HttpCode: "200"
+
+  WebListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref WebALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebTargetGroup
+
+  # --- Auto Scaling Group ---
+  WebASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !ImportValue NotesApp-PublicA
+        - !ImportValue NotesApp-PublicB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebLaunchTemplate
+        Version: !GetAtt WebLaunchTemplate.LatestVersionNumber
+      MinSize: "2"
+      MaxSize: "4"
+      DesiredCapacity: "2"
+      TargetGroupARNs: [!Ref WebTargetGroup]
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WebASG
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50.0
+
+Outputs:
+  ALBEndpoint:
+    Description: "Public URL for the Notes App"
+    Value: !Sub "http://${WebALB.DNSName}"

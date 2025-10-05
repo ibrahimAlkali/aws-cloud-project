@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Week 8 Day 3 - RDS tier (MySQL in private subnets)"
+
+Parameters:
+  DBUsername:
+    Type: String
+    Default: admin
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9_]*"
+    Description: Master username for the RDS instance
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Master password for the RDS instance
+
+  DBName:
+    Type: String
+    Default: notesapp
+    Description: Initial database name
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    AllowedValues: [db.t3.micro]
+    Description: RDS instance size (free-tier eligible)
+
+Resources:
+  NotesDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: mysql
+      EngineVersion: "8.0"
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: 20
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !ImportValue NotesApp-DBSubnetGroup
+      VPCSecurityGroups: [!ImportValue NotesApp-DBSG]
+      PubliclyAccessible: false
+      MultiAZ: false
+      StorageEncrypted: true
+      DeletionProtection: false
+      BackupRetentionPeriod: 1
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+
+Outputs:
+  DBEndpoint:
+    Description: "MySQL database endpoint"
+    Value: !GetAtt NotesDB.Endpoint.Address
+
+  DBName:
+    Description: "Database name"
+    Value: !Ref DBName
